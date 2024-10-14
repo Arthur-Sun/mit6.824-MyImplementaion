@@ -3,6 +3,7 @@ package mr
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"os"
 	"sort"
 	"strconv"
@@ -39,8 +40,10 @@ func ihash(key string) int {
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
-	currentTime := time.Now().Unix()
-	id = int(currentTime)
+	rand.Seed(time.Now().UnixNano())
+	// 生成一个[0, 100)之间的随机整数
+	randomNumber := rand.Intn(100000000)
+	id = int(randomNumber)
 	// Your worker implementation here.
 
 	//一直循环请求
@@ -117,7 +120,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				Id:           id,
 				Status:       2,
 				MapResult:    "",
-				ReduceResult: "1",
+				ReduceResult: filename,
 			}
 			finishReply := Reply{}
 			FinishReduceTask(finishArg, finishReply)

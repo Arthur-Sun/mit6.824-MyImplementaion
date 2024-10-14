@@ -3,6 +3,7 @@ package mr
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"math/rand"
 	"os"
 	"sort"
@@ -49,10 +50,10 @@ func Worker(mapf func(string, string) []KeyValue,
 	//一直循环请求
 	for {
 		askForTask := Args{
-			Id:           id,
-			Status:       3,
-			MapResult:    "",
-			ReduceResult: "",
+			Id:        id,
+			Status:    3,
+			MapNum:    0,
+			ReduceNum: 0,
 		}
 		reply := Reply{}
 		RequestForTask(&askForTask, &reply)
@@ -68,27 +69,60 @@ func Worker(mapf func(string, string) []KeyValue,
 		//map任务
 		if reply.WorkType == 1 {
 			intermediate := mapf(reply.Filename, reply.Content)
-			err := writeToFile(intermediate)
-			if err != nil {
-				log.Fatalf("cannot write to file: %v", err)
+			buckets := make([][]KeyValue, reply.N)
+			for i := range buckets {
+				buckets[i] = []KeyValue{}
 			}
+			for _, kva := range intermediate {
+				buckets[ihash(kva.Key)%reply.N] = append(buckets[ihash(kva.Key)%reply.N], kva)
+			}
+
+			// write into intermediate files
+			for i := range buckets {
+				oname := "mr-" + strconv.Itoa(reply.MapNum) + "-" + strconv.Itoa(i)
+				ofile, _ := ioutil.TempFile("", oname+"*")
+				enc := json.NewEncoder(ofile)
+				for _, kva := range buckets[i] {
+					err := enc.Encode(&kva)
+					if err != nil {
+						log.Fatalf("cannot write into %v", oname)
+					}
+				}
+				os.Rename(ofile.Name(), oname)
+				ofile.Close()
+			}
+			//err := writeToFile(intermediate)
+			//if err != nil {
+			//	log.Fatalf("cannot write to file: %v", err)
+			//}
 			finishArg := Args{
-				Id:           id,
-				Status:       1,
-				MapResult:    reply.Filename,
-				ReduceResult: "",
+				Id:        id,
+				Status:    1,
+				MapNum:    reply.MapNum,
+				ReduceNum: 0,
 			}
 			finishReply := Reply{}
 			FinishMapTask(finishArg, finishReply)
 		} else if reply.WorkType == 2 {
 			// reduce任务
-			filename := reply.ReducePath
-			intermediate, err := readFromFile(filename)
-			if err != nil {
-				log.Fatalf("cannot read from file: %v", err)
+			intermediate := []KeyValue{}
+			for i := 0; i < reply.M; i++ {
+				fn := "mr-" + strconv.Itoa(i) + "-" + strconv.Itoa(reply.ReduceNum)
+				temp, err := readFromFile(fn)
+				if err != nil {
+					log.Fatalf("cannot read from %v", fn)
+				}
+				intermediate = append(intermediate, temp...)
 			}
 			sort.Sort(ByKey(intermediate))
+			// output file
+			oname := "mr-out-" + strconv.Itoa(reply.ReduceNum)
+			ofile, _ := ioutil.TempFile("", oname+"*")
 
+			//
+			// call Reduce on each distinct key in intermediate[],
+			// and print the result to mr-out-0.
+			//
 			i := 0
 			for i < len(intermediate) {
 				j := i + 1
@@ -101,26 +135,19 @@ func Worker(mapf func(string, string) []KeyValue,
 				}
 				output := reducef(intermediate[i].Key, values)
 
-				index := ihash(intermediate[i].Key) % N
-				path := "mr-out-" + strconv.Itoa(index)
-
-				// 使用 OpenFile 以写入模式打开文件
-				ofile, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-				if err != nil {
-					log.Fatalf("cannot open output file: %v", err)
-				}
-
-				// 写入输出
+				// this is the correct format for each line of Reduce output.
 				fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
-				ofile.Close() // 记得关闭文件
 
 				i = j
 			}
+			os.Rename(ofile.Name(), oname)
+			ofile.Close()
+
 			finishArg := Args{
-				Id:           id,
-				Status:       2,
-				MapResult:    "",
-				ReduceResult: filename,
+				Id:        id,
+				Status:    2,
+				MapNum:    0,
+				ReduceNum: reply.ReduceNum,
 			}
 			finishReply := Reply{}
 			FinishReduceTask(finishArg, finishReply)
@@ -129,25 +156,26 @@ func Worker(mapf func(string, string) []KeyValue,
 }
 
 func writeToFile(kvs []KeyValue) error {
-	for _, kv := range kvs {
-		index := ihash(kv.Key) % N
-		filename := "mr-" + strconv.Itoa(index)
 
-		// 使用 OpenFile 以写入模式打开文件
-		file, err := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY, 0644)
-		if err != nil {
-			return err
-		}
-
-		// 确保写入后关闭文件
-		enc := json.NewEncoder(file)
-		err = enc.Encode(&kv)
-		if err != nil {
-			file.Close() // 出错时也要关闭文件
-			return err
-		}
-		file.Close() // 写入完成后关闭文件
-	}
+	//for _, kv := range kvs {
+	//	index := ihash(kv.Key) % N
+	//	filename := "mr-" + strconv.Itoa(index)
+	//
+	//	// 使用 OpenFile 以写入模式打开文件
+	//	file, err := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY, 0644)
+	//	if err != nil {
+	//		return err
+	//	}
+	//
+	//	// 确保写入后关闭文件
+	//	enc := json.NewEncoder(file)
+	//	err = enc.Encode(&kv)
+	//	if err != nil {
+	//		file.Close() // 出错时也要关闭文件
+	//		return err
+	//	}
+	//	file.Close() // 写入完成后关闭文件
+	//}
 	return nil
 }
 

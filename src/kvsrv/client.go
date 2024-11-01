@@ -4,7 +4,6 @@ import "6.5840/labrpc"
 import "crypto/rand"
 import "math/big"
 
-
 type Clerk struct {
 	server *labrpc.ClientEnd
 	// You will have to modify this struct.
@@ -37,7 +36,23 @@ func MakeClerk(server *labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
-	return ""
+	args := &GetArgs{}
+	args.Key = key
+	args.Id = nrand()
+	args.Confirm = false
+	reply := &GetReply{}
+	ok := ck.server.Call("KVServer.Get", args, &reply)
+	for !ok {
+		ok = ck.server.Call("KVServer.Get", args, &reply)
+	}
+	//confirm
+	args.Confirm = true
+	confirmOk := ck.server.Call("KVServer.Get", args, &reply)
+	for !confirmOk {
+		confirmOk = ck.server.Call("KVServer.Get", args, &reply)
+	}
+
+	return reply.Value
 }
 
 // shared by Put and Append.
@@ -50,7 +65,24 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) string {
 	// You will have to modify this function.
-	return ""
+	args := &PutAppendArgs{}
+	args.Key = key
+	args.Value = value
+	args.Id = nrand()
+	args.Confirm = false
+	reply := &PutAppendReply{}
+	ok := ck.server.Call("KVServer."+op, args, &reply)
+	for !ok {
+		ok = ck.server.Call("KVServer."+op, args, &reply)
+	}
+	//confirm
+	args.Confirm = true
+	confirmOk := ck.server.Call("KVServer."+op, args, &reply)
+	for !confirmOk {
+		confirmOk = ck.server.Call("KVServer."+op, args, &reply)
+	}
+
+	return reply.Value
 }
 
 func (ck *Clerk) Put(key string, value string) {

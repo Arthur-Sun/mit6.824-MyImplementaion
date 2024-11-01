@@ -26,10 +26,8 @@ type ExampleReply struct {
 
 // Add your RPC definitions here.
 type Args struct {
-	Id     int //worker's id
-	Status int //worker's status 0工作中 1map工作完成 2reduce工作完成 3请求工作
-	//MapResult    string //map的返回值（存储在文件中，返回文件名）
-	//ReduceResult string //reduce的返回值 （存储在文件中，返回文件名）
+	Id        int //worker's id
+	Status    int //worker's status 0工作中 1map工作完成 2reduce工作完成 3请求工作
 	MapNum    int //map任务编号
 	ReduceNum int //reduce任务编号
 }
@@ -40,8 +38,8 @@ type Reply struct {
 	Content   string //文件内容
 	ReduceNum int    //reduce任务编号
 	MapNum    int    //map任务编号
-	N         int
-	M         int
+	N         int    //reduce任务数量
+	M         int    //map任务数量
 }
 
 // Cook up a unique-ish UNIX-domain socket name

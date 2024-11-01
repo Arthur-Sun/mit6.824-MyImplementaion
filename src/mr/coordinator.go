@@ -20,8 +20,8 @@ type Coordinator struct {
 	mapStatus      map[int]int    //mapIndex-status    status 0:等待map 1:正在进行map 2:map完
 	workers        map[int]int    //worker's id-status status 0:空闲 1:正在map 2:正在reduce 3:关机 4:故障
 	reduceStatus   map[int]int    //reduceIndex-reduce status 0:未reduce 1:正在reduce 2:已reduce完
-	N              int
-	M              int
+	N              int            //reduce任务数量
+	M              int            //map任务数量
 }
 
 var isInitialized = false
@@ -44,22 +44,17 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 
 func (c *Coordinator) FinishMapTask(args Args, reply *Reply) error {
 	c.mu.Lock()
-	//filename := c.fileWorker[args.Id]
 	c.mapStatus[args.MapNum] = 2
-	//fmt.Println(args.Id, args.MapNum, c.mapStatus)
 	c.workers[args.Id] = 0
 	c.mu.Unlock()
-	//fmt.Printf("%v, finished map task %v\n", args.Id, args.MapResult)
 	return nil
 }
 
 func (c *Coordinator) FinishReduceTask(args Args, reply *Reply) error {
 	c.mu.Lock()
-	//filename := c.fileWorker[args.Id]
 	c.reduceStatus[args.ReduceNum] = 2
 	c.workers[args.Id] = 0
 	c.mu.Unlock()
-	//fmt.Printf("finished reduce task %v\n", args.ReduceNum)
 	return nil
 }
 
@@ -90,7 +85,6 @@ func (c *Coordinator) ApplyTask(args Args, reply *Reply) error {
 					time.Sleep(time.Duration(15) * time.Second) // wait 10 seconds
 					c.mu.Lock()
 					if c.mapStatus[mapNum] == 1 {
-						//fmt.Println("就你，", filename)
 						c.mapStatus[mapNum] = 0
 						c.workers[args.Id] = 4
 					}

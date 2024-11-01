@@ -91,10 +91,6 @@ func Worker(mapf func(string, string) []KeyValue,
 				os.Rename(ofile.Name(), oname)
 				ofile.Close()
 			}
-			//err := writeToFile(intermediate)
-			//if err != nil {
-			//	log.Fatalf("cannot write to file: %v", err)
-			//}
 			finishArg := Args{
 				Id:        id,
 				Status:    1,
@@ -119,10 +115,6 @@ func Worker(mapf func(string, string) []KeyValue,
 			oname := "mr-out-" + strconv.Itoa(reply.ReduceNum)
 			ofile, _ := ioutil.TempFile("", oname+"*")
 
-			//
-			// call Reduce on each distinct key in intermediate[],
-			// and print the result to mr-out-0.
-			//
 			i := 0
 			for i < len(intermediate) {
 				j := i + 1
@@ -153,30 +145,6 @@ func Worker(mapf func(string, string) []KeyValue,
 			FinishReduceTask(finishArg, finishReply)
 		}
 	}
-}
-
-func writeToFile(kvs []KeyValue) error {
-
-	//for _, kv := range kvs {
-	//	index := ihash(kv.Key) % N
-	//	filename := "mr-" + strconv.Itoa(index)
-	//
-	//	// 使用 OpenFile 以写入模式打开文件
-	//	file, err := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY, 0644)
-	//	if err != nil {
-	//		return err
-	//	}
-	//
-	//	// 确保写入后关闭文件
-	//	enc := json.NewEncoder(file)
-	//	err = enc.Encode(&kv)
-	//	if err != nil {
-	//		file.Close() // 出错时也要关闭文件
-	//		return err
-	//	}
-	//	file.Close() // 写入完成后关闭文件
-	//}
-	return nil
 }
 
 func readFromFile(filename string) ([]KeyValue, error) {

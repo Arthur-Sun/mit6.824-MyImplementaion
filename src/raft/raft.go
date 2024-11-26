@@ -66,7 +66,7 @@ type Raft struct {
 	//persistent state on all servers
 	currentTerm int
 	votedFor    int
-	log         []*LogEntry
+	log         []LogEntry
 	voteTerm    int
 
 	//volatile state on all servers
@@ -202,6 +202,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if (len(rf.log) < args.PrevLogIndex+1) || (args.PrevLogIndex >= 0 && (rf.log[args.PrevLogIndex].Term != args.PrevLogTerm)) {
 			reply.Success = false
 			//todo backup
+			//场景3，槽位有缺失
+			if len(rf.log) < args.PrevLogIndex+1 {
+				reply.XTerm = -1
+				reply.XLen = args.PrevLogIndex + 1 - len(rf.log)
+			} else {
+				//场景1、2，槽位无缺失
+				reply.XTerm = rf.log[args.PrevLogIndex].Term
+				reply.XIndex = rf.searchStartIndexByTerm(reply.XTerm)
+			}
 			return
 		} else {
 			reply.Success = true
@@ -210,13 +219,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				if rf.log[args.PrevLogIndex+1].Term != args.Term {
 					rf.log = rf.log[0 : args.PrevLogIndex+1]
 					for i := 0; i < len(args.Entries); i++ {
-						rf.log = append(rf.log, &args.Entries[i])
+						rf.log = append(rf.log, args.Entries[i])
 					}
 				}
 			} else {
 				//4. append any new entries not already in the log
 				for i := 0; i < len(args.Entries); i++ {
-					rf.log = append(rf.log, &args.Entries[i])
+					rf.log = append(rf.log, args.Entries[i])
 				}
 			}
 			return
@@ -247,6 +256,27 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 	reply.Term = rf.currentTerm
 	//fmt.Printf("candidate: %v, follower: %v follower's term: %v, candidate's term: %v,  votedFor: %v\n", args.CandidateId, rf.me, rf.currentTerm, args.Term, rf.votedFor)
+}
+
+// 通过二分法查找某一Term在log中第一次出现的位置；不存在就返回-1
+func (rf *Raft) searchStartIndexByTerm(target int) int {
+	l := 0
+	r := len(rf.log) - 1
+	ans := len(rf.log)
+	for l <= r {
+		mid := (r-l)/2 + l
+		if rf.log[mid].Term >= target {
+			r = mid - 1
+			ans = mid
+		} else {
+			l = mid + 1
+		}
+	}
+	if rf.log[ans].Term == target {
+		return ans
+	} else {
+		return -1
+	}
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -304,14 +334,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	//如果是master，启动新协程来运行，保证立刻返回
 	go func() {
 		entry := LogEntry{Term: term, Command: command}
-		rf.log = append(rf.log, &entry)
+		rf.log = append(rf.log, entry)
 		count := 1
 		for i, _ := range rf.peers {
 			if i != rf.me {
 				actualIndex := i
 				go func() {
-					entries := make([]LogEntry, 0)
-					entries = append(entries, entry)
+					entries := make([]LogEntry, 1)
+					copy(entries, rf.log[index:])
 					args := AppendEntriesArgs{
 						Term:         term,
 						LeaderId:     rf.me,
@@ -324,13 +354,47 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 					//fmt.Printf("leader %v sending to %v\n", rf.me, actualIndex)
 					rf.sendAppendEntries(actualIndex, &args, &reply)
 					//todo 有错误，重新发送
-
+					for !reply.Success {
+						//场景3，log槽位有缺失
+						if reply.XTerm == -1 {
+							startIndex := index - reply.XLen
+							args.PrevLogIndex = startIndex - 1
+							args.PrevLogTerm = rf.log[startIndex-1].Term
+							entries = make([]LogEntry, reply.XLen+1)
+							copy(entries, rf.log[startIndex:])
+							args.Entries = entries
+							rf.sendAppendEntries(actualIndex, &args, &reply)
+						} else {
+							ldStartIndex := rf.searchStartIndexByTerm(reply.XTerm)
+							//场景1，leader没有XTerm
+							if ldStartIndex == -1 {
+								startIndex := reply.XIndex
+								args.PrevLogIndex = startIndex - 1
+								args.PrevLogTerm = rf.log[startIndex-1].Term
+								entries = make([]LogEntry, index-startIndex+1)
+								copy(entries, rf.log[startIndex:])
+								args.Entries = entries
+								rf.sendAppendEntries(actualIndex, &args, &reply)
+							} else {
+								//场景2，leader有XTerm
+								startIndex := ldStartIndex + 1
+								args.PrevLogIndex = startIndex - 1
+								args.PrevLogTerm = rf.log[startIndex-1].Term
+								entries = make([]LogEntry, index-startIndex+1)
+								copy(entries, rf.log[startIndex:])
+								args.Entries = entries
+								rf.sendAppendEntries(actualIndex, &args, &reply)
+							}
+						}
+					}
 					//判断是否被大多数收到
 					if reply.Success {
 						count++
+						rf.nextIndex[actualIndex] = len(rf.log)
 					}
 					if count > len(rf.peers)/2 {
 						rf.commit(index)
+						rf.broadcastCommit()
 					}
 				}()
 			}
@@ -344,7 +408,6 @@ func (rf *Raft) commit(index int) {
 	//fmt.Printf("%v commiting %v %v\n", rf.me, index, rf.commitIndex)
 	for i := rf.commitIndex + 1; i <= index; i++ {
 		rf.applyCh <- ApplyMsg{CommandValid: true, Command: rf.log[i].Command, CommandIndex: i}
-		//todo commit
 	}
 	rf.commitIndex = index
 }
@@ -521,8 +584,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentTerm = 0
 	rf.votedFor = -1
 	//需要一个dummy节点
-	rf.log = make([]*LogEntry, 1)
-	rf.log[0] = &LogEntry{Term: 0, Command: nil}
+	rf.log = make([]LogEntry, 1)
+	rf.log[0] = LogEntry{Term: 0, Command: nil}
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 	rf.state = 0

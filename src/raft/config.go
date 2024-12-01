@@ -144,8 +144,8 @@ func (cfg *config) checkLogs(i int, m ApplyMsg) (string, bool) {
 		if old, oldok := cfg.logs[j][m.CommandIndex]; oldok && old != v {
 			log.Printf("%v: log %v; server %v\n", i, cfg.logs[i], cfg.logs[j])
 			// some server has already committed a different value for this entry!
-			err_msg = fmt.Sprintf("commit index=%v server=%v %v != server=%v %v, %v, %v",
-				m.CommandIndex, i, m.Command, j, old, cfg.logs[i], cfg.logs[j])
+			err_msg = fmt.Sprintf("commit index=%v server=%v %v != server=%v %v",
+				m.CommandIndex, i, m.Command, j, old)
 		}
 	}
 	_, prevok := cfg.logs[i][m.CommandIndex-1]
@@ -553,7 +553,6 @@ func (cfg *config) wait(index int, n int, startTerm int) interface{} {
 // if retry==false, calls Start() only once, in order
 // to simplify the early Lab 3B tests.
 func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
-	fmt.Println("one.....")
 	t0 := time.Now()
 	starts := 0
 	for time.Since(t0).Seconds() < 10 && cfg.checkFinished() == false {
@@ -568,9 +567,8 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			}
 			cfg.mu.Unlock()
 			if rf != nil {
-				index1, term, ok := rf.Start(cmd)
+				index1, _, ok := rf.Start(cmd)
 				if ok {
-					fmt.Println("one, leader:", starts, "term:", term)
 					index = index1
 					break
 				}

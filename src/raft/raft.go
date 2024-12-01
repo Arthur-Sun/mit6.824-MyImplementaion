@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+	"fmt"
 	"math"
 
 	//	"bytes"
@@ -67,7 +68,6 @@ type Raft struct {
 	currentTerm int
 	votedFor    int
 	log         []LogEntry
-	voteTerm    int
 
 	//volatile state on all servers
 	commitIndex  int
@@ -178,6 +178,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	////fmt.Println("????", len(args.Entries), args.Entries == nil, rf.me, args)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	//fmt.Println("appendEntries, leader:", args.LeaderId, "me:", rf.me, "term:", args.Term, "curTerm:", rf.currentTerm, "entries:", args.Entries)
 	//1. leader's term < follower's term
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
@@ -186,74 +187,89 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	//heartBeat
 	rf.currentTerm = args.Term
+	if args.Entries != nil {
+		fmt.Println("appendEntries, server: ", rf.me, "leader: ", args.LeaderId, "args.Term:", args.Term, "entries:", args.Entries)
+	}
 	rf.state = 0
 	curTime := time.Now().UnixMilli()
 	rf.heartBeatNum = curTime
 	rf.votedFor = -1
-	//5. if leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
-	if args.LeaderCommit > rf.commitIndex {
-		//fmt.Printf("%v update commitIndex, args.LeaderCommit: %v, rf.commitIndex: %v %v\n", rf.me, args.LeaderCommit, rf.commitIndex, len(rf.log))
-		indexToCommit := int(math.Min(float64(args.LeaderCommit), float64(len(rf.log)-1)))
-		rf.commit(indexToCommit)
-	}
+	reply.Term = args.Term
 
-	if args.Entries != nil {
-		//2. reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
-		if (len(rf.log) < args.PrevLogIndex+1) || (args.PrevLogIndex >= 0 && (rf.log[args.PrevLogIndex].Term != args.PrevLogTerm)) {
-			reply.Success = false
-			//todo backup
-			//场景3，槽位有缺失
-			if len(rf.log) < args.PrevLogIndex+1 {
-				reply.XTerm = -1
-				reply.XLen = args.PrevLogIndex + 1 - len(rf.log)
-			} else {
-				//场景1、2，槽位无缺失
-				reply.XTerm = rf.log[args.PrevLogIndex].Term
-				reply.XIndex = rf.searchStartIndexByTerm(reply.XTerm)
-			}
-			return
+	if (len(rf.log) < args.PrevLogIndex+1) || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		reply.Success = false
+		//场景3，槽位有缺失
+		if len(rf.log) < args.PrevLogIndex+1 {
+			reply.XTerm = -1
+			reply.XLen = args.PrevLogIndex + 1 - len(rf.log)
 		} else {
-			reply.Success = true
-			//3. an existing entry conflicts with a new one
-			if len(rf.log) > args.PrevLogIndex+1 {
-				if rf.log[args.PrevLogIndex+1].Term != args.Term {
-					rf.log = rf.log[0 : args.PrevLogIndex+1]
-					for i := 0; i < len(args.Entries); i++ {
-						rf.log = append(rf.log, args.Entries[i])
-					}
-				}
-			} else {
-				//4. append any new entries not already in the log
+			//场景1、2，槽位无缺失
+			reply.XTerm = rf.log[args.PrevLogIndex].Term
+			reply.XIndex = rf.searchStartIndexByTerm(reply.XTerm)
+		}
+		return
+	}
+	//5. if leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+	if args.Entries != nil {
+		fmt.Printf("%v received append log, args.prev: %v, len log: %v, logs: %v, args.prevTerm:%v\n", rf.me, args.PrevLogIndex, len(rf.log), rf.log, args.PrevLogTerm)
+		//2. reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
+		reply.Success = true
+		//3. an existing entry conflicts with a new one
+		if len(rf.log) > args.PrevLogIndex+1 {
+			if rf.log[args.PrevLogIndex+1].Term != args.Term {
+				rf.log = rf.log[0 : args.PrevLogIndex+1]
 				for i := 0; i < len(args.Entries); i++ {
 					rf.log = append(rf.log, args.Entries[i])
 				}
 			}
-			return
+		} else {
+			//4. append any new entries not already in the log
+			for i := 0; i < len(args.Entries); i++ {
+				curIndex := args.PrevLogIndex + i + 1
+				if curIndex < len(rf.log) {
+					rf.log[curIndex] = args.Entries[i]
+				} else {
+					rf.log = append(rf.log, args.Entries[i])
+				}
+			}
 		}
-
+	}
+	if args.LeaderCommit > rf.commitIndex {
+		fmt.Printf("%v update commitIndex, args.LeaderCommit: %v, rf.commitIndex: %v %v\n", rf.me, args.LeaderCommit, rf.commitIndex, len(rf.log))
+		indexToCommit := int(math.Min(float64(args.LeaderCommit), float64(len(rf.log)-1)))
+		rf.commit(indexToCommit)
 	}
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	for ok == false {
-		ok = rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	}
+	//for ok == false {
+	//	ok = rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	//}
 	return ok
 }
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
-	if args.Term >= rf.currentTerm && ((rf.votedFor == -1 || rf.votedFor == args.CandidateId) || args.Term > rf.voteTerm) {
-		reply.VoteGranted = true
+	if args.Term > rf.currentTerm {
 		rf.state = 0
-		rf.voteTerm = args.Term
-		rf.votedFor = args.CandidateId
-		//fmt.Printf("Follower %d requested vote for term %d\n", rf.me, args.Term)
-	} else {
-		reply.VoteGranted = false
+		rf.currentTerm = args.Term
+		rf.votedFor = -1
 	}
+	if args.Term >= rf.currentTerm && (rf.votedFor == -1 || rf.votedFor == args.CandidateId) {
+		lastLogTerm := rf.log[len(rf.log)-1].Term
+		// the candidate's is at least as up-to-date as receiver's log, grant vote !!
+		if args.LastLogTerm > lastLogTerm || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= len(rf.log)-1) {
+			reply.VoteGranted = true
+			rf.state = 0
+			rf.votedFor = args.CandidateId
+			rf.heartBeatNum = time.Now().UnixMilli()
+			return
+		}
+		//fmt.Printf("Follower %d requested vote for term %d\n", rf.me, args.Term)
+	}
+	reply.VoteGranted = false
 	reply.Term = rf.currentTerm
 	//fmt.Printf("candidate: %v, follower: %v follower's term: %v, candidate's term: %v,  votedFor: %v\n", args.CandidateId, rf.me, rf.currentTerm, args.Term, rf.votedFor)
 }
@@ -327,85 +343,20 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if rf.state != 1 {
 		return 0, 0, false
 	}
-	index := len(rf.log)
+	rf.mu.Lock()
+	length := len(rf.log)
 	term := rf.currentTerm
+	entry := LogEntry{Term: term, Command: command}
+	rf.log = append(rf.log, entry)
+	rf.matchIndex[rf.me] = rf.nextIndex[rf.me]
+	rf.nextIndex[rf.me] = rf.nextIndex[rf.me] + 1
+	defer rf.mu.Unlock()
 	// Your code here (3B).
-
-	//如果是master，启动新协程来运行，保证立刻返回
-	go func() {
-		entry := LogEntry{Term: term, Command: command}
-		rf.log = append(rf.log, entry)
-		count := 1
-		for i, _ := range rf.peers {
-			if i != rf.me {
-				actualIndex := i
-				go func() {
-					entries := make([]LogEntry, 1)
-					copy(entries, rf.log[index:])
-					args := AppendEntriesArgs{
-						Term:         term,
-						LeaderId:     rf.me,
-						PrevLogIndex: index - 1,
-						PrevLogTerm:  rf.log[index-1].Term,
-						Entries:      entries,
-						LeaderCommit: rf.commitIndex,
-					}
-					reply := AppendEntriesReply{}
-					//fmt.Printf("leader %v sending to %v\n", rf.me, actualIndex)
-					rf.sendAppendEntries(actualIndex, &args, &reply)
-					//todo 有错误，重新发送
-					for !reply.Success {
-						//场景3，log槽位有缺失
-						if reply.XTerm == -1 {
-							startIndex := index - reply.XLen
-							args.PrevLogIndex = startIndex - 1
-							args.PrevLogTerm = rf.log[startIndex-1].Term
-							entries = make([]LogEntry, reply.XLen+1)
-							copy(entries, rf.log[startIndex:])
-							args.Entries = entries
-							rf.sendAppendEntries(actualIndex, &args, &reply)
-						} else {
-							ldStartIndex := rf.searchStartIndexByTerm(reply.XTerm)
-							//场景1，leader没有XTerm
-							if ldStartIndex == -1 {
-								startIndex := reply.XIndex
-								args.PrevLogIndex = startIndex - 1
-								args.PrevLogTerm = rf.log[startIndex-1].Term
-								entries = make([]LogEntry, index-startIndex+1)
-								copy(entries, rf.log[startIndex:])
-								args.Entries = entries
-								rf.sendAppendEntries(actualIndex, &args, &reply)
-							} else {
-								//场景2，leader有XTerm
-								startIndex := ldStartIndex + 1
-								args.PrevLogIndex = startIndex - 1
-								args.PrevLogTerm = rf.log[startIndex-1].Term
-								entries = make([]LogEntry, index-startIndex+1)
-								copy(entries, rf.log[startIndex:])
-								args.Entries = entries
-								rf.sendAppendEntries(actualIndex, &args, &reply)
-							}
-						}
-					}
-					//判断是否被大多数收到
-					if reply.Success {
-						count++
-						rf.nextIndex[actualIndex] = len(rf.log)
-					}
-					if count > len(rf.peers)/2 {
-						rf.commit(index)
-						rf.broadcastCommit()
-					}
-				}()
-			}
-		}
-	}()
-
-	return index, term, true
+	return length, term, true
 }
 
 func (rf *Raft) commit(index int) {
-	//fmt.Printf("%v commiting %v %v\n", rf.me, index, rf.commitIndex)
+	fmt.Printf("%v commiting %v %v\n", rf.me, index, rf.commitIndex)
 	for i := rf.commitIndex + 1; i <= index; i++ {
 		rf.applyCh <- ApplyMsg{CommandValid: true, Command: rf.log[i].Command, CommandIndex: i}
 	}
@@ -426,8 +377,114 @@ func (rf *Raft) broadcastCommit() {
 					LeaderCommit: rf.commitIndex,
 				}
 				reply := AppendEntriesReply{}
+				fmt.Println("commiting... server:", actualIndex)
 				rf.sendAppendEntries(actualIndex, &args, &reply)
 			}()
+		}
+	}
+}
+
+// 定期检查是否有新的可commit的log
+func (rf *Raft) commitProcess() {
+	for rf.killed() == false {
+		if rf.state != 1 {
+			return
+		}
+		rf.mu.Lock()
+		toBeCommitted := rf.commitIndex + 1
+		count := 0
+		for i, _ := range rf.peers {
+			if rf.matchIndex[i] >= toBeCommitted {
+				count++
+			}
+		}
+		rf.mu.Unlock()
+		if count > len(rf.peers)/2 {
+			go func() {
+				rf.commit(toBeCommitted)
+				//rf.broadcastCommit()
+			}()
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func (rf *Raft) appendLog(serverId int) {
+	for rf.killed() == false {
+		if rf.state == 1 {
+			rf.mu.Lock()
+			if len(rf.log) > rf.nextIndex[serverId] {
+				entries := make([]LogEntry, len(rf.log)-rf.nextIndex[serverId])
+				copy(entries, rf.log[rf.nextIndex[serverId]:])
+				term := rf.currentTerm
+				prevIdx := rf.nextIndex[serverId] - 1
+				fmt.Println("prevIdx:", prevIdx)
+				prevTerm := rf.log[prevIdx].Term
+				ldCommit := rf.commitIndex
+				rf.mu.Unlock()
+				args := AppendEntriesArgs{
+					Term:         term,
+					LeaderId:     rf.me,
+					PrevLogIndex: prevIdx,
+					PrevLogTerm:  prevTerm,
+					Entries:      entries,
+					LeaderCommit: ldCommit,
+				}
+				reply := AppendEntriesReply{}
+				fmt.Println("appending log... server:", serverId, "prevIdx", prevIdx)
+				rf.sendAppendEntries(serverId, &args, &reply)
+				rf.mu.Lock()
+				if term != rf.currentTerm {
+					rf.mu.Unlock()
+					continue
+				}
+				rf.mu.Unlock()
+				if reply.Success {
+					rf.mu.Lock()
+					rf.matchIndex[serverId] = args.PrevLogIndex + len(args.Entries)
+					rf.nextIndex[serverId] = rf.matchIndex[serverId] + 1
+					fmt.Println("success, serverId:", serverId, "nextIndex:", rf.nextIndex[serverId], "matchIndex:", rf.matchIndex[serverId])
+					rf.mu.Unlock()
+				} else {
+					if reply.Term > rf.currentTerm {
+						rf.mu.Lock()
+						fmt.Println("appendlog", rf.me)
+						rf.state = 0
+						rf.currentTerm = reply.Term
+						rf.votedFor = -1
+						rf.mu.Unlock()
+						return
+					}
+					if reply.XTerm == -1 {
+						rf.mu.Lock()
+						rf.nextIndex[serverId] = rf.nextIndex[serverId] - reply.XLen
+						rf.mu.Unlock()
+					} else {
+						rf.mu.Lock()
+						ldStartIndex := rf.searchStartIndexByTerm(reply.XTerm)
+						if ldStartIndex == -1 {
+							rf.nextIndex[serverId] = reply.XIndex
+						} else {
+							rf.nextIndex[serverId] = ldStartIndex + 1
+						}
+						rf.mu.Unlock()
+					}
+				}
+			} else {
+				rf.mu.Unlock()
+			}
+		} else {
+			return
+		}
+		time.Sleep(time.Duration(10) * time.Millisecond)
+	}
+}
+
+// 定期检查是否有新的可append的log
+func (rf *Raft) appendProcess() {
+	for i, _ := range rf.peers {
+		if i != rf.me {
+			go rf.appendLog(i)
 		}
 	}
 }
@@ -459,7 +516,7 @@ func (rf *Raft) ticker() {
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 		//1. 状态是follower 2. 没有收到心跳
 		t := time.Now().UnixMilli()
-		if rf.state == 0 && t-rf.heartBeatNum > ms {
+		if rf.state != 1 && t-rf.heartBeatNum > ms {
 			//开始选举
 			//fmt.Println("start election, id: ", rf.me, " ", t, " ", rf.heartBeatNum)
 			rf.startElection()
@@ -481,6 +538,7 @@ func (rf *Raft) startElection() {
 	defer rf.mu.Unlock()
 	rf.state = 2
 	rf.currentTerm++
+	fmt.Println("election, me:", rf.me, "term:", rf.currentTerm)
 	rf.votedFor = rf.me
 	ballotNum := 1
 	for index, _ := range rf.peers {
@@ -490,14 +548,11 @@ func (rf *Raft) startElection() {
 				args := RequestVoteArgs{
 					Term:         rf.currentTerm,
 					CandidateId:  rf.me,
-					LastLogIndex: rf.lastApplied,
-					LastLogTerm:  rf.lastApplied,
+					LastLogIndex: len(rf.log) - 1,
+					LastLogTerm:  rf.log[len(rf.log)-1].Term,
 				}
 				reply := RequestVoteReply{}
-				ok := rf.sendRequestVote(actualIndex, &args, &reply)
-				for ok == false {
-					ok = rf.sendRequestVote(actualIndex, &args, &reply)
-				}
+				rf.sendRequestVote(actualIndex, &args, &reply)
 				//fmt.Printf("sended RequestVote at term %d, to server %d, voted? %v\n", rf.currentTerm, actualIndex, reply.VoteGranted)
 				voted := reply.VoteGranted
 				if voted {
@@ -508,14 +563,22 @@ func (rf *Raft) startElection() {
 					rf.broadcastHeartBeat()
 					//上位后初始化nextIndex
 					for index, _ := range rf.peers {
-						if index != rf.me {
-							rf.nextIndex[index] = len(rf.log)
+						rf.nextIndex[index] = len(rf.log)
+						if index == rf.me {
+							rf.matchIndex[index] = len(rf.log) - 1
+						} else {
+							rf.matchIndex[index] = 0
 						}
 					}
-					//fmt.Println(rf.me, " win", " ", rf.state)
+					go rf.commitProcess()
+					go rf.appendProcess()
+					fmt.Println(rf.me, " win", " ", rf.state)
 					return
 				}
 				if reply.Term > rf.currentTerm {
+					rf.currentTerm = reply.Term
+					rf.votedFor = -1
+					rf.heartBeatNum = time.Now().UnixMilli()
 					rf.state = 0
 				}
 			}()
@@ -559,6 +622,11 @@ func (rf *Raft) broadcastHeartBeat() {
 				}
 				reply := AppendEntriesReply{}
 				rf.sendAppendEntries(actualIndex, &args, &reply)
+				if reply.Term > rf.currentTerm {
+					rf.state = 0
+					curTime := time.Now().UnixMilli()
+					rf.heartBeatNum = curTime
+				}
 			}()
 		}
 	}
@@ -600,7 +668,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
-
 	go rf.heartBeatProcess()
 
 	return rf

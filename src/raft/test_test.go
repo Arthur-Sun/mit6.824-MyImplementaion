@@ -457,34 +457,51 @@ func TestRejoin3B(t *testing.T) {
 	defer cfg.cleanup()
 
 	cfg.begin("Test (3B): rejoin of partitioned leader")
-
+	fmt.Println("syp  1", cfg.checkOneLeader())
 	cfg.one(101, servers, true)
+	fmt.Println("syp  2", cfg.checkOneLeader())
 
 	// leader network failure
 	leader1 := cfg.checkOneLeader()
+	fmt.Println("syp  3", cfg.checkOneLeader())
+
 	cfg.disconnect(leader1)
+	fmt.Println(leader1, "disconnected...")
+
+	fmt.Println("syp  4", cfg.checkOneLeader())
 
 	// make old leader try to agree on some entries
 	cfg.rafts[leader1].Start(102)
 	cfg.rafts[leader1].Start(103)
 	cfg.rafts[leader1].Start(104)
+	fmt.Println("syp  7", cfg.checkOneLeader())
 
 	// new leader commits, also for index=2
 	cfg.one(103, 2, true)
+	fmt.Println("syp  8", cfg.checkOneLeader())
 
 	// new leader network failure
 	leader2 := cfg.checkOneLeader()
+	fmt.Println("syp  9", cfg.checkOneLeader())
+
 	cfg.disconnect(leader2)
+	fmt.Println(leader2, "disconnected...")
 
 	// old leader connected again
 	cfg.connect(leader1)
+	fmt.Println(leader1, "connected...")
 
+	fmt.Println("syp  11", cfg.checkOneLeader())
 	cfg.one(104, 2, true)
+	fmt.Println("syp  12", cfg.checkOneLeader())
 
 	// all together now
 	cfg.connect(leader2)
+	fmt.Println(leader2, "connected...")
+	fmt.Println("syp  13", cfg.checkOneLeader())
 
 	cfg.one(105, servers, true)
+	fmt.Println("syp  14", cfg.checkOneLeader())
 
 	cfg.end()
 }
